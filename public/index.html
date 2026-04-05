@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Radioaktivität-Monitor (Live)</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body, html, #map { margin: 0; padding: 0; height: 100%; background: #0a0a0a; }
+        .info-panel {
+            position: absolute; top: 20px; right: 20px; z-index: 1000;
+            background: rgba(0, 0, 0, 0.85); color: white; padding: 15px;
+            border-radius: 8px; border: 1px solid #444; font-family: sans-serif; width: 220px;
+        }
+        .leaflet-tooltip-radiation {
+            background: #1a1a1a !important; color: white !important;
+            border: 1px solid #ff4d4d !important; padding: 10px; font-size: 0.9rem;
+        }
+        .legend { font-size: 0.75rem; margin-top: 10px; color: #aaa; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+    <div class="info-panel">
+        <h3 style="margin:0; color:#ff4d4d;">☢️ ODL-Echtzeit</h3>
+        <p id="status" style="font-size:0.8rem; margin:5px 0;">Lade Stationen...</p>
+        <div class="legend">
+            <span class="dot" style="background:#4caf50;"></span> Normal (< 0.15)<br>
+            <span class="dot" style="background:#ffa500;"></span> Erhöht (0.15 - 0.20)<br>
+            <span class="dot" style="background:#ff4d4d;"></span> Warnung (> 0.20)
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map', { zoomControl: false }).setView([51.16, 10.45], 6);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; BfS Opendata'
+        }).addTo(map);
+
+        const stationLayer = L.layerGroup().addTo(map);
+
+        async function updateData() {
+            try {
+                const res = await fetch('/api/radiation'); // Greift relativ auf den gleichen Server zu
+                const data = await res.json();
+                
+                stationLayer.clearLayers();
+                data.forEach(s => {
+                    let color = "#4caf50";
+                    if (s.v > 0.15) color = "#ffa500";
+                    if (s.v > 0.20) color = "#ff4d4d";
+
+                    const marker = L.circleMarker([s.lt, s.ln], {
+                        radius: 5, fillColor: color, color: "#fff", weight: 0.5, fillOpacity: 0.8
+                    });
+
+                    // HOVER (TOOLTIP)
+                    marker.bindTooltip(`
+                        <b>${s.n}</b> (${s.plz})<br>
+                        <span style="font-size:1.1rem; color:${color};"><b>${s.v.toFixed(3)} µSv/h</b></span><hr style="border:0; border-top:1px solid #444;">
+                        Boden: ${s.v_ter.toFixed(3)} | Kosmisch: ${s.v_cos.toFixed(3)}<br>
+                        Höhe: ${s.h}m | Status: ${s.st}
+                    `, { sticky: true, className: 'leaflet-tooltip-radiation' });
+
+                    marker.addTo(stationLayer);
+                });
+                document.getElementById('status').innerText = `✅ ${data.length} Messstellen aktiv`;
+            } catch (err) {
+                document.getElementById('status').innerText = "❌ Verbindungsfehler!";
+            }
+        }
+
+        updateData();
+        setInterval(updateData, 600000); // 10 Min Refresh
+    </script>
+</body>
+</html>
