@@ -1,0 +1,17 @@
+[Unit]
+Description=Radioaktivität-Monitor Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/radiation-app
+ExecStart=/usr/bin/node radiation-server.js
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=radiation-app
+
+[Install]
+WantedBy=multi-user.target
