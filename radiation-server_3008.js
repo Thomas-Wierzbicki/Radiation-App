@@ -7,20 +7,17 @@ const path = require('path');
 const mqtt = require('mqtt');
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3003;
 
-const CARTO_API_KEY = process.env.CARTO_API_KEY || '';
-
+// CARTO API-Key
+const CARTO_API_KEY = process.env.CARTO_API_KEY ? process.env.CARTO_API_KEY.trim() : '';
 
 // MQTT / MeshCom
 const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://127.0.0.1';
 const MQTT_TOPIC = process.env.MQTT_TOPIC || 'meshcom/tx';
 const CALL_DST = process.env.CALL_DST || '9';
-
-// Schwelle für "rot" (MQTT Alarm)
 const RED_THRESHOLD = parseFloat(process.env.RED_THRESHOLD || '0.1');
 
-// PLZ Filter-Liste aus .env (z.B. FILTER_PLZ_ZONES=0,1,8)
 const FILTER_PLZ_ZONES = process.env.FILTER_PLZ_ZONES 
     ? process.env.FILTER_PLZ_ZONES.split(',').map(s => s.trim()) 
     : [];
@@ -34,14 +31,40 @@ let mqttConnected = false;
 let updateRunning = false;
 
 const mqttClient = mqtt.connect(MQTT_BROKER);
-
 mqttClient.on('connect', () => { mqttConnected = true; console.log(`✅ MQTT verbunden`); });
 mqttClient.on('error', (err) => { mqttConnected = false; console.error('❌ MQTT Fehler:', err.message); });
 
+// --- MIDDLEWARES ---
 app.use(cors());
 app.use(express.json());
+
+// Request-Logger (zeigt jeden Request in der Konsole an)
+app.use((req, res, next) => {
+    console.log(`📡 [${req.method}] ${req.url}`);
+    next();
+});
+
+// --- API ROUTEN (Zuerst definieren!) ---
+app.get('/api/test', (req, res) => {
+    res.send("TEST ROUTE FUNKTIONIERT!");
+});
+
+app.get('/api/config', (req, res) => {
+    res.json({ cartoApiKey: CARTO_API_KEY });
+});
+
+app.get('/api/radiation', (req, res) => {
+    res.json(cachedRadiationData);
+});
+
+app.get('/healthz', (req, res) => {
+    res.json({ ok: true, entries: cachedRadiationData.length, filter: FILTER_PLZ_ZONES });
+});
+
+// Statische Dateien (Frontend)
 app.use(express.static(path.join(__dirname, 'public')));
 
+// --- HILFSFUNKTIONEN ---
 function isPlausibleGermanyCoordinate(lat, lon) {
     return (Number.isFinite(lat) && Number.isFinite(lon) && lat >= 47.0 && lat <= 55.5 && lon >= 5.0 && lon <= 15.6);
 }
@@ -83,7 +106,6 @@ function buildMappedStations(features) {
         const p = f.properties || {};
         const stationPlz = p.plz != null ? String(p.plz).trim() : null;
 
-        // PLZ FILTER
         if (FILTER_PLZ_ZONES.length > 0) {
             const firstDigit = stationPlz ? stationPlz[0] : null;
             if (!FILTER_PLZ_ZONES.includes(firstDigit)) return null;
@@ -95,9 +117,10 @@ function buildMappedStations(features) {
         return {
             n: p.name || 'unbekannt',
             plz: stationPlz,
-            v: Number(p.value || 0), // Volle Präzision (3 Nachkommastellen)
+            v: Number(p.value || 0),
             v_ter: Number(p.value_terrestrial || 0),
             v_cos: Number(p.value_cosmic || 0),
+            h: p.height ?? p.site_elevation ?? 0,
             st: p.site_status_text || 'unbekannt',
             ts: p.end_measure || null,
             lt: coords.lat,
@@ -123,8 +146,12 @@ async function updateRadiationData() {
     updateRunning = false;
 }
 
-app.get('/api/radiation', (req, res) => res.json(cachedRadiationData));
-app.get('/healthz', (req, res) => res.json({ ok: true, entries: cachedRadiationData.length, filter: FILTER_PLZ_ZONES }));
+// --- START ---
+if (!CARTO_API_KEY) {
+    console.warn('⚠️ CARTO_API_KEY nicht in .env gefunden!');
+} else {
+    console.log('[OK] CARTO_API_KEY geladen.');
+}
 
 initPlzDb();
 app.listen(PORT, '0.0.0.0', async () => {

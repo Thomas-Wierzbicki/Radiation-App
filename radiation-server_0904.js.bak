@@ -17,6 +17,11 @@ const CALL_DST = process.env.CALL_DST || '9';
 // Schwelle für "rot"
 const RED_THRESHOLD = parseFloat(process.env.RED_THRESHOLD || '0.18');
 
+// PLZ Filter-Liste (z.B. "0,1,8,9") -> ['0', '1', '8', '9']
+const FILTER_PLZ_ZONES = process.env.FILTER_PLZ_ZONES 
+    ? process.env.FILTER_PLZ_ZONES.split(',').map(s => s.trim()) 
+    : [];
+
 // Abrufintervall für BfS in ms
 const UPDATE_INTERVAL_MS = (parseInt(process.env.UPDATE_INTERVAL_MINUTES, 10) || 10) * 60 * 1000;
 
@@ -108,31 +113,20 @@ function getStationCoordinates(feature) {
     const p = feature?.properties || {};
     const stationPlz = p.plz != null ? String(p.plz).trim() : null;
 
-    // 1) echte BfS-Koordinaten bevorzugen
     const geometryCoords = feature?.geometry?.coordinates;
     if (Array.isArray(geometryCoords) && geometryCoords.length >= 2) {
         const lon = Number(geometryCoords[0]);
         const lat = Number(geometryCoords[1]);
 
         if (isPlausibleGermanyCoordinate(lat, lon)) {
-            return {
-                lat,
-                lon,
-                source: 'bfs'
-            };
+            return { lat, lon, source: 'bfs' };
         }
     }
 
-    // 2) Fallback über PLZ
     if (stationPlz && PLZ_DATABASE.has(stationPlz)) {
         const coords = PLZ_DATABASE.get(stationPlz);
-
         if (isPlausibleGermanyCoordinate(coords.lat, coords.lon)) {
-            return {
-                lat: coords.lat,
-                lon: coords.lon,
-                source: 'plz'
-            };
+            return { lat: coords.lat, lon: coords.lon, source: 'plz' };
         }
     }
 
@@ -147,11 +141,8 @@ function publishRedStation(station) {
 
     const valueText = Number.isFinite(station.v) ? station.v.toFixed(2) : '0.00';
     const placeRaw = station.n || 'unbekannt';
-
-    // Nur ASCII, damit nachgelagerte Systeme nicht an Sonderzeichen scheitern
     const place = String(placeRaw).replace(/[^a-zA-Z0-9 .,_\-()/]/g, '');
     
-    //const msg = `RAD ${valueText} uSv/h ${place}`.substring(0, 80);
     const msg = `☢️ RAD ${valueText} µSv/h ${place}`.substring(0, 140);
     
     const payload = {
@@ -177,11 +168,18 @@ function buildMappedStations(features) {
     return features.map((f) => {
         const p = f.properties || {};
         const stationPlz = p.plz != null ? String(p.plz).trim() : null;
-        const coords = getStationCoordinates(f);
-
-        if (!coords) {
-            return null;
+        
+        // --- PLZ FILTER LOGIK ---
+        if (FILTER_PLZ_ZONES.length > 0) {
+            const firstDigit = (stationPlz && stationPlz.length > 0) ? stationPlz[0] : null;
+            if (!FILTER_PLZ_ZONES.includes(firstDigit)) {
+                return null; // Überspringen, wenn nicht in der Liste
+            }
         }
+        // ------------------------
+
+        const coords = getStationCoordinates(f);
+        if (!coords) return null;
 
         return {
             n: p.name || 'unbekannt',
@@ -228,7 +226,7 @@ function sendRedStationsAsync(redStations) {
     });
 }
 
-async function updateRadiationData(bundeslandCodes = []) {
+async function updateRadiationData() {
     if (updateRunning) {
         console.log('⏭️ Update übersprungen, vorheriger Lauf noch aktiv');
         return;
@@ -238,52 +236,25 @@ async function updateRadiationData(bundeslandCodes = []) {
     console.log('☢️ Hintergrundabruf gestartet');
 
     try {
-        // 1. Anfrage ohne Server-Filter vorbereiten (stabilste Methode)
-        const queryParams = {
-            service: 'WFS',
-            version: '1.1.0',
-            request: 'GetFeature',
-            typeName: 'opendata:odlinfo_odl_1h_latest',
-            outputFormat: 'application/json'
-        };
-
-        // 2. Daten vom BfS abrufen
-        const response = await axios.get('https://bfs.de', {
-            params: queryParams,
+        const response = await axios.get('https://www.imis.bfs.de/ogc/opendata/ows', {
+            params: {
+                service: 'WFS',
+                version: '1.1.0',
+                request: 'GetFeature',
+                typeName: 'opendata:odlinfo_odl_1h_latest',
+                outputFormat: 'application/json'
+            },
             timeout: 45000
         });
 
-        // 3. Basis-Check der Antwort
         if (!response.data || !Array.isArray(response.data.features)) {
-            console.error('❌ Unerwartete Antwort vom BfS (Keine Features)');
+            console.error('❌ Unerwartete Antwort vom BfS');
             return;
         }
 
-        let features = response.data.features;
+        const mappedStations = buildMappedStations(response.data.features);
 
-        // 4. LOKALER FILTER (Hier filtern wir die Liste in deinem RAM)
-        if (Array.isArray(bundeslandCodes) && bundeslandCodes.length > 0) {
-            const codes = bundeslandCodes.map(c => c.toUpperCase());
-            features = features.filter(f => {
-                const bl = f.properties?.kenn_bl;
-                return bl && codes.includes(bl.toUpperCase());
-            });
-            console.log(`🔍 Lokal gefiltert auf: ${codes.join(', ')} (${features.length} Stationen gefunden)`);
-        }
-
-        // 5. Mappen der (gefilterten) Stationen
-        const mappedStations = buildMappedStations(features);
-
-        console.log(`✅ ${mappedStations.length} Stationen verarbeitet`);
-
-        // Statistik & Caching
-        const bfsCount = mappedStations.filter((s) => s.coord_source === 'bfs').length;
-        const plzCount = mappedStations.filter((s) => s.coord_source === 'plz').length;
-        
-        const maxValue = mappedStations.length
-            ? Math.max(...mappedStations.map((s) => Number(s.v) || 0))
-            : 0;
-        console.log(`📈 Maximalwert: ${maxValue} uSv/h | Quelle: BfS=${bfsCount}, PLZ=${plzCount}`);
+        console.log(`✅ ${mappedStations.length} Stationen verarbeitet (Filter aktiv: ${FILTER_PLZ_ZONES.length > 0})`);
 
         cachedRadiationData = mappedStations;
         lastCacheTime = Date.now();
@@ -298,9 +269,7 @@ async function updateRadiationData(bundeslandCodes = []) {
     }
 }
 
-
 app.get('/api/radiation', (req, res) => {
-    console.log('➡️ /api/radiation aufgerufen');
     res.json(cachedRadiationData || []);
 });
 
@@ -310,11 +279,9 @@ app.get('/healthz', (req, res) => {
         mqttConnected,
         updateRunning,
         cacheAgeSeconds: lastCacheTime ? Math.round((Date.now() - lastCacheTime) / 1000) : null,
-        cachedEntries: Array.isArray(cachedRadiationData) ? cachedRadiationData.length : 0,
-        redThreshold: RED_THRESHOLD,
-        mqttTopic: MQTT_TOPIC,
-        callDst: CALL_DST,
-        updateIntervalMinutes: Math.round(UPDATE_INTERVAL_MS / 60000)
+        cachedEntries: cachedRadiationData.length,
+        plzFilter: FILTER_PLZ_ZONES,
+        redThreshold: RED_THRESHOLD
     });
 });
 
@@ -322,8 +289,11 @@ initPlzDb();
 
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Radiation-Server bereit auf Port ${PORT}`);
-    console.log(`📡 MQTT_TOPIC=${MQTT_TOPIC}, CALL_DST=${CALL_DST}, RED_THRESHOLD=${RED_THRESHOLD}`);
-    console.log(`⏱️ Update-Intervall: ${Math.round(UPDATE_INTERVAL_MS / 60000)} Minuten`);
+    if (FILTER_PLZ_ZONES.length > 0) {
+        console.log(`🔍 Filter aktiv für PLZ-Zonen: ${FILTER_PLZ_ZONES.join(', ')}`);
+    } else {
+        console.log(`🌐 Lade alle Regionen (kein PLZ-Filter)`);
+    }
 
     await updateRadiationData();
     setInterval(updateRadiationData, UPDATE_INTERVAL_MS);

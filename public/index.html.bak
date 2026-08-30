@@ -25,9 +25,9 @@
         <h3 style="margin:0; color:#ff4d4d;">☢️ ODL-Echtzeit</h3>
         <p id="status" style="font-size:0.8rem; margin:5px 0;">Lade Stationen...</p>
         <div class="legend">
-            <span class="dot" style="background:#4caf50;"></span> Normal (&lt; 0.15)<br>
+            <span class="dot" style="background:#4caf50;"></span> Normal (< 0.15)<br>
             <span class="dot" style="background:#ffa500;"></span> Erhöht (0.15 - 0.20)<br>
-            <span class="dot" style="background:#ff4d4d;"></span> Warnung (&gt; 0.20)
+            <span class="dot" style="background:#ff4d4d;"></span> Warnung (> 0.20)
         </div>
     </div>
 
@@ -36,33 +36,16 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         const map = L.map('map', { zoomControl: false }).setView([51.16, 10.45], 6);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; BfS Opendata'
+        }).addTo(map);
+
         const stationLayer = L.layerGroup().addTo(map);
 
-        // 1. TileLayer mit API-Key aus dem Backend initialisieren
-        async function initTileLayer() {
-            try {
-                const res = await fetch('/api/config');
-                const config = await res.json();
-                
-                const tileUrl = config.cartoApiKey 
-                    ? `https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=${encodeURIComponent(config.cartoApiKey)}`
-                    : 'https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png';
-
-                L.tileLayer(tileUrl, {
-                    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; xBfS Opendata'
-                }).addTo(map);
-            } catch (err) {
-                console.error("TileLayer-Konfiguration fehlgeschlagen, nutze Fallback-URL:", err);
-                L.tileLayer('https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png', {
-                    attribution: '&copy; CARTO &copy; BfS Opendata'
-                }).addTo(map);
-            }
-        }
-
-        // 2. Strahlungsdaten abrufen und Marker setzen
         async function updateData() {
             try {
-                const res = await fetch('/api/radiation');
+                const res = await fetch('/api/radiation'); // Greift relativ auf den gleichen Server zu
                 const data = await res.json();
                 
                 stationLayer.clearLayers();
@@ -72,34 +55,27 @@
                     if (s.v > 0.20) color = "#ff4d4d";
 
                     const marker = L.circleMarker([s.lt, s.ln], {
-                        radius: 5,
-                        fillColor: color,
-                        color: "#fff",
-                        weight: 0.5,
-                        fillOpacity: 0.8
+                        radius: 5, fillColor: color, color: "#fff", weight: 0.5, fillOpacity: 0.8
                     });
 
-                    // Hover Tooltip mit Fallback-Prüfung gegen undefined/null
+                    // HOVER (TOOLTIP)
                     marker.bindTooltip(`
-                        <b>${s.n || 'Unbekannte Station'}</b> (${s.plz || '-'})<br>
-                        <span style="font-size:1.1rem; color:${color};"><b>${(s.v ?? 0).toFixed(3)} µSv/h</b></span><hr style="border:0; border-top:1px solid #444;">
-                        Boden: ${(s.v_ter ?? 0).toFixed(3)} | Kosmisch: ${(s.v_cos ?? 0).toFixed(3)}<br>
-                        Höhe: ${s.h ?? '-'}m | Status: ${s.st || 'unbekannt'}
+                        <b>${s.n}</b> (${s.plz})<br>
+                        <span style="font-size:1.1rem; color:${color};"><b>${s.v.toFixed(3)} µSv/h</b></span><hr style="border:0; border-top:1px solid #444;">
+                        Boden: ${s.v_ter.toFixed(3)} | Kosmisch: ${s.v_cos.toFixed(3)}<br>
+                        Höhe: ${s.h}m | Status: ${s.st}
                     `, { sticky: true, className: 'leaflet-tooltip-radiation' });
 
                     marker.addTo(stationLayer);
                 });
                 document.getElementById('status').innerText = `✅ ${data.length} Messstellen aktiv`;
             } catch (err) {
-                console.error("Fehler beim Laden der Messdaten:", err);
                 document.getElementById('status').innerText = "❌ Verbindungsfehler!";
             }
         }
 
-        // Initiale Aufrufe
-        initTileLayer();
         updateData();
-        setInterval(updateData, 600000); // 10 Minuten Intervall
+        setInterval(updateData, 600000); // 10 Min Refresh
     </script>
 </body>
 </html>

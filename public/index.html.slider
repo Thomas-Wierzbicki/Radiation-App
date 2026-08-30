@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Radioaktivität Monitor - Karte</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #f0f2f5; }
+        
+        .header { background: #2c3e50; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        
+        .main-container { display: flex; flex: 1; overflow: hidden; }
+        
+        #map { flex: 2; height: 100%; z-index: 1; }
+        
+        .sidebar { flex: 1; max-width: 400px; background: white; overflow-y: auto; padding: 20px; box-shadow: -2px 0 5px rgba(0,0,0,0.1); z-index: 2; }
+        
+        .controls { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 2px solid #eee; }
+        
+        .slider-box { margin-top: 15px; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        
+        .station-card { 
+            background: #fff; border: 1px solid #ddd; border-left: 6px solid #27ae60; 
+            padding: 12px; margin-bottom: 10px; border-radius: 4px; transition: transform 0.1s;
+        }
+        .station-card.warn { border-left-color: #c0392b; background: #fff5f5; }
+        .station-name { font-weight: bold; display: block; margin-bottom: 4px; }
+        .station-val { font-size: 1.2em; color: #2980b9; font-weight: bold; }
+
+        #status { font-size: 0.9em; color: #bdc3c7; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2 style="margin:0;">☢️ BfS ODL-Monitor</h2>
+        <div id="status">Verbindung wird hergestellt...</div>
+    </div>
+
+    <div class="main-container">
+        <div id="map"></div>
+
+        <div class="sidebar">
+            <div class="controls">
+                <strong>Minimum-Filter:</strong>
+                <div class="slider-box">
+                    <span id="valDisplay" style="font-size: 1.5em; font-weight: bold;">0.000</span> µSv/h
+                    <input type="range" id="minSlider" min="0" max="0.5" step="0.001" value="0">
+                </div>
+            </div>
+            
+            <div id="list">
+                </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        let allStations = [];
+        let map, markerLayer;
+        
+        const slider = document.getElementById('minSlider');
+        const valDisplay = document.getElementById('valDisplay');
+        const listDiv = document.getElementById('list');
+
+        // Karte initialisieren
+        function initMap() {
+            map = L.map('map').setView([51.1657, 10.4515], 6); // Zentrum Deutschland
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap'
+            }).addTo(map);
+            
+            markerLayer = L.layerGroup().addTo(map);
+        }
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/radiation');
+                allStations = await res.json();
+                
+                if (allStations.length > 0) {
+                    const maxObserved = Math.max(...allStations.map(s => s.v));
+                    slider.max = (maxObserved + 0.05).toFixed(3);
+                    
+                    // Karte auf die vorhandenen Daten fitten
+                    const coords = allStations.map(s => [s.lt, s.ln]);
+                    map.fitBounds(coords);
+                }
+                
+                document.getElementById('status').innerText = `${allStations.length} Stationen aktiv (gefiltert nach PLZ)`;
+                updateDisplay(0);
+            } catch (e) {
+                document.getElementById('status').innerText = "Fehler beim Datenabruf";
+            }
+        }
+
+        function updateDisplay(minThreshold) {
+            const filtered = allStations.filter(s => s.v >= minThreshold);
+            
+            // 1. Liste aktualisieren
+            listDiv.innerHTML = filtered.map(s => `
+                <div class="station-card ${s.v > 0.18 ? 'warn' : ''}">
+                    <span class="station-name">${s.n}</span>
+                    <span class="station-val">${s.v.toFixed(3)} µSv/h</span><br>
+                    <small>PLZ: ${s.plz} | Stand: ${new Date(s.ts).toLocaleTimeString()}</small>
+                </div>
+            `).join('');
+
+            // 2. Karte aktualisieren
+            markerLayer.clearLayers();
+            filtered.forEach(s => {
+                const color = s.v > 0.18 ? '#c0392b' : '#27ae60';
+                const marker = L.circleMarker([s.lt, s.ln], {
+                    radius: 8,
+                    fillColor: color,
+                    color: "#fff",
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                });
+                
+                marker.bindPopup(`
+                    <strong>${s.n}</strong><br>
+                    Wert: <b>${s.v.toFixed(3)} µSv/h</b><br>
+                    Status: ${s.st}
+                `);
+                markerLayer.addLayer(marker);
+            });
+        }
+
+        slider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            valDisplay.innerText = val.toFixed(3);
+            updateDisplay(val);
+        });
+
+        initMap();
+        loadData();
+    </script>
+</body>
+</html>
