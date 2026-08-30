@@ -38,6 +38,38 @@
         const map = L.map('map', { zoomControl: false }).setView([51.16, 10.45], 6);
         const stationLayer = L.layerGroup().addTo(map);
 
+        // Funktion zum manuellen Versenden eines Messpunkts via MQTT / MeshCom
+        async function sendStationToMqtt(station) {
+            const statusEl = document.getElementById('status');
+            try {
+                console.log("📡 Sende Station an MQTT...", station.n);
+                if (statusEl) statusEl.innerText = `📡 Sende: ${station.n || 'unbekannt'}...`;
+
+                const res = await fetch('/api/publish-station', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(station)
+                });
+                const result = await res.json();
+
+                if (result.ok) {
+                    console.log(`✅ Ausgesendet: ${station.n}`);
+                    if (statusEl) {
+                        statusEl.innerText = `✅ Gesendet: ${station.n}`;
+                        setTimeout(() => {
+                            statusEl.innerText = `✅ ${stationLayer.getLayers().length} Messstellen aktiv`;
+                        }, 4000);
+                    }
+                } else {
+                    console.warn(`⚠️ Fehler beim Senden:`, result.error);
+                    if (statusEl) statusEl.innerText = `⚠️ Fehler: ${result.error}`;
+                }
+            } catch (err) {
+                console.error("❌ Netzwerkfehler beim Senden:", err);
+                if (statusEl) statusEl.innerText = "❌ Sende-Fehler!";
+            }
+        }
+
         // 1. TileLayer mit API-Key aus dem Backend initialisieren
         async function initTileLayer() {
             try {
@@ -84,8 +116,14 @@
                         <b>${s.n || 'Unbekannte Station'}</b> (${s.plz || '-'})<br>
                         <span style="font-size:1.1rem; color:${color};"><b>${(s.v ?? 0).toFixed(3)} µSv/h</b></span><hr style="border:0; border-top:1px solid #444;">
                         Boden: ${(s.v_ter ?? 0).toFixed(3)} | Kosmisch: ${(s.v_cos ?? 0).toFixed(3)}<br>
-                        Höhe: ${s.h ?? '-'}m | Status: ${s.st || 'unbekannt'}
+                        Höhe: ${s.h ?? '-'}m | Status: ${s.st || 'unbekannt'}<br>
+                        <span style="font-size:0.75rem; color:#aaa;">(Klick = MQTT / Funk senden)</span>
                     `, { sticky: true, className: 'leaflet-tooltip-radiation' });
+
+                    // ---> VARIANTE B: Bei Klick sofort per MQTT / Funk aussenden <---
+                    marker.on('click', () => {
+                        sendStationToMqtt(s);
+                    });
 
                     marker.addTo(stationLayer);
                 });
